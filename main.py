@@ -3,6 +3,7 @@ import requests
 import threading
 from flask import Flask, request
 from google import genai
+from google.genai import Client
 
 app = Flask(__name__)
 
@@ -44,43 +45,33 @@ def refresh_tokens():
     return False
 
 def send_to_amo(lead_id, text, retry=True):
-    """Отправляет совет в amoCRM, при 401 — обновляет токен"""
-    global current_access
-    url = f"https://{SUBDOMAIN}.amocrm.ru/api/v4/leads/{lead_id}/notes"
-    headers = {"Authorization": f"Bearer {current_access}"}
-    payload = [{"note_type": "common", "params": {"text": f"🤖 Gemini 3: {text}"}}]
-    
-    res = requests.post(url, json=payload, headers=headers)
-    
-    if res.status_code == 401 and retry:
-        if refresh_tokens():
-            return send_to_amo(lead_id, text, retry=False)
-    
-    print(f"📤 Результат amoCRM: {res.status_code}")
+    # Добавим принт сюда, чтобы видеть попытку отправки
+    print(f"📤 Попытка отправить примечание в amoCRM для {lead_id}...")
+    # ... твой код отправки ...
 
 def ai_worker(lead_id, client_text):
-    """Используем ту самую модель, которая работала"""
+    print(f"📡 Подготовка запроса для сделки {lead_id}...")
+    model_id = "gemini-1.5-flash"
+    
     try:
-        # Эта модель точно активна в твоем проекте
-        model_id = "gemini-1.5-flash"
+        # Устанавливаем ограничение по времени, чтобы не висело вечно
+        print(f"🚀 Отправка данных в Google AI ({model_id})...")
         
-        print(f"🚀 Запрос к проверенной модели: {model_id}...")
-        
-        # Запрос через актуальный SDK
         response = client_ai.models.generate_content(
             model=model_id,
-            contents=f"Ты эксперт сервисного центра. Дай 1 короткий совет менеджеру по запросу: {client_text}"
+            contents=f"Ты помощник в CRM. Клиент пишет: {client_text}. Дай совет в 1 предложении."
         )
         
+        print(f"🛰 Ответ от Google получен!")
+        
         if response and response.text:
-            advice = response.text.strip()
-            print(f"✅ Успех! Ответ получен.")
-            send_to_amo(lead_id, advice)
+            print(f"✅ Текст ответа: {response.text[:50]}...")
+            send_to_amo(lead_id, response.text)
         else:
-            print("⚠️ Пустой ответ от ИИ.")
+            print("⚠️ Google прислал пустой объект.")
             
     except Exception as e:
-        print(f"❌ Ошибка вызова {model_id}: {e}")
+        print(f"💥 Ошибка внутри ai_worker: {str(e)}")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
