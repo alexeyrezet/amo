@@ -65,3 +65,4 @@ def get_ai_advice(history, current_text):
     return None
 
 # Остальные функции (send_to_amo, webhook) остаются без изменений
+
