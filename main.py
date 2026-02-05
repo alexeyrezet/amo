@@ -1,75 +1,78 @@
 import os
 import requests
+import threading
 from flask import Flask, request
+from google import genai
 
 app = Flask(__name__)
 
-# Настройки
-SUBDOMAIN = "restartivanovo"
-# Эти ключи должны быть в Environment Variables на Render
-AMO_TOKEN = os.environ.get("AMO_TOKEN")
+# --- Конфигурация из Render Environment Variables ---
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
+AMO_TOKEN = os.environ.get("AMO_TOKEN")
+SUBDOMAIN = "restartivanovo"
 
-def get_ai_advice(text):
-    print(f"📡 Запрос к Gemini через прямой HTTP...")
-    # Используем стабильную версию v1
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
-    
-    payload = {
-        "contents": [{
-            "parts": [{"text": f"Ты эксперт сервисного центра. Клиент пишет: {text}. Дай 1 очень короткий совет менеджеру."}]
-        }]
-    }
-    
+# Инициализация клиента Google по стандартам 2026 года
+client_ai = genai.Client(api_key=GEMINI_KEY, http_options={'api_version': 'v1beta'})
+
+def ai_worker(lead_id, client_text):
+    """
+    Фоновая задача для работы с Gemini.
+    Используем модель 'gemini-1.5-flash', которая является самой стабильной.
+    """
     try:
-        response = requests.post(url, json=payload, timeout=20)
-        print(f"🛰 Статус Google: {response.status_code}")
+        print(f"🚀 Запрос к Gemini для сделки {lead_id}...")
         
-        if response.status_code == 200:
-            result = response.json()
-            advice = result['candidates'][0]['content']['parts'][0]['text']
-            return advice
-        else:
-            print(f"❌ Ошибка Google: {response.text}")
-            return None
-    except Exception as e:
-        print(f"💥 Ошибка запроса: {e}")
-        return None
+        # Согласно ai.google.dev, теперь это самый надежный метод
+        response = client_ai.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=f"Ты эксперт сервисного центра. Дай 1 очень короткий совет менеджеру по запросу: {client_text}"
+        )
 
-def send_to_amo(lead_id, advice):
-    print(f"📤 Отправка в amoCRM для сделки {lead_id}...")
+        if response and response.text:
+            advice = response.text.strip()
+            print(f"✅ ИИ ответил: {advice[:50]}...")
+            send_to_amo(lead_id, advice)
+        else:
+            print("⚠️ ИИ вернул пустой ответ.")
+
+    except Exception as e:
+        print(f"❌ Ошибка Gemini: {e}")
+
+def send_to_amo(lead_id, text):
+    """Отправка примечания в amoCRM"""
     url = f"https://{SUBDOMAIN}.amocrm.ru/api/v4/leads/{lead_id}/notes"
     headers = {
         "Authorization": f"Bearer {AMO_TOKEN}",
         "Content-Type": "application/json"
     }
-    payload = [{"note_type": "common", "params": {"text": f"🤖 Совет: {advice}"}}]
+    payload = [{"note_type": "common", "params": {"text": f"🤖 Gemini: {text}"}}]
     
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=10)
-        print(f"✅ amoCRM ответила: {res.status_code}")
+        print(f"📤 Результат amoCRM: {res.status_code}")
     except Exception as e:
-        print(f"💥 Ошибка amoCRM: {e}")
+        print(f"💥 Ошибка при отправке в amoCRM: {e}")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    # Получаем данные от вебхука amoCRM
     data = request.form.to_dict()
-    # Извлекаем ID сделки и текст
+    
+    # Извлекаем ID сделки и текст последнего сообщения
     lead_id = data.get('message[add][0][entity_id]') or data.get('leads[update][0][id]')
     text = data.get('message[add][0][text]') or data.get('leads[update][0][name]')
 
     if lead_id and text:
-        if "входящий" in text.lower():
+        # Игнорируем технические сообщения
+        if "входящий" in text.lower() and "успешный" in text.lower():
             return "OK", 200
 
-        # Получаем совет (синхронно, чтобы Render не закрыл соединение)
-        advice = get_ai_advice(text)
-        if advice:
-            send_to_amo(lead_id, advice)
+        # Запускаем обработку в отдельном потоке
+        threading.Thread(target=ai_worker, args=(lead_id, text)).start()
     
     return "OK", 200
 
 if __name__ == "__main__":
+    # Порт для Render
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
